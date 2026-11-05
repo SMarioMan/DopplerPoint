@@ -17,7 +17,7 @@ terrain = ["rasterio>=1.3,<2"]
 dopplerpoint = "dopplerpoint.cli:main"
 
 [tool.setuptools.package-data]
-dopplerpoint = ["web/*.html"]
+dopplerpoint = ["web/*.html", "web/*.js", "web/*.css", "web/LEAFLET-LICENSE"]
 
 [tool.setuptools.packages.find]
 include = ["dopplerpoint*"]

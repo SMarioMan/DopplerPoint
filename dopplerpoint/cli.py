@@ -40,7 +40,19 @@ def main():
     detect.add_argument('media')
     detect.add_argument('--workers',type=int,default=4)
     detect.add_argument('--output',default='output/detection')
+    review = commands.add_parser('review',help='Review saved detections, listen to clips and map coordinate hypotheses')
+    review.add_argument('--audio',required=True,help='Decoded PCM WAV, e.g. detection output/audio.wav')
+    review.add_argument('--report',help='Detection report JSON (including rejected proposals)')
+    review.add_argument('--results',help='Scored results, coarse aircraft sample JSON, or GeoJSON')
+    review.add_argument('--config',help='Corresponding search config for actual-flight overlays and curated export')
+    review.add_argument('--flights',help='Corresponding flight CSV for actual-flight overlays')
+    review.add_argument('--port',type=int,default=8766)
     args = parser.parse_args()
+    if args.command == 'review':
+        from .review import ReviewSession
+        from .server import serve
+        serve(args.port,ReviewSession(args.audio,args.report,args.results,args.config,args.flights))
+        return
     if args.command == 'detect':
         from .pipeline import prepare_media,detect_events
         out = Path(args.output)

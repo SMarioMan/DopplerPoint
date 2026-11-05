@@ -240,3 +240,60 @@ inclusive date range, e.g. `analyze recording.opus --date 2026-10-28
 --end-date 2026-10-29 --bounds SOUTH WEST NORTH EAST`. The pipeline downloads and
 combines both dates even when no exact recording start is known. The equivalent
 configuration key is `end_date`.
+
+## Manual curve screening and interactive maps
+
+Manual review is optional and does not change automatic detection. Start a review
+session using the decoded WAV and saved report (large recordings stay on disk):
+
+```sh
+uv run dopplerpoint review \
+  --audio output/video-test/autonomous/audio.wav \
+  --report output/video-test/autonomous/detection-report.json \
+  --results output/video-test/coarse-worldwide-screen.json
+```
+
+The review server listens on loopback port 8766. It provides:
+
+- Accepted events or all saved proposals, with bounded original-audio playback.
+- Adjustable frequency band, FFT resolution, contrast and window padding.
+- Cyan ideal-fit curves, optional harmonic overlays, a playback cursor and click-to-seek.
+- Automatic fit parameters and numerical evidence checks beside the signal.
+- Separate **keep / reject / unreviewed** decisions with notes. Save/restore review
+  JSON and export only explicitly kept events. The original detection report is unchanged.
+- A pan/zoom Leaflet map with clickable points linked to the coordinate table.
+  OpenStreetMap tiles need Internet and can be disabled; markers remain usable without
+  tiles. The map library itself is vendored locally. A coordinate plot is the fallback
+  if the map library cannot load. At most 10,000 saved points are displayed; the UI
+  states the displayed and saved counts. The table lists the first 100; any marker
+  can be selected to inspect its properties.
+
+**The trial's coarse coordinates are aircraft sample positions, not observer-location
+matches.** The map labels them as unscored aircraft samples. Scored search result JSON
+is labeled as observer hypotheses; imported GeoJSON is labeled as imported points.
+No map point is presented as a confirmed location.
+
+To compare real flight geometry against each event, load the corresponding scored
+result, search configuration and flight CSV:
+
+```sh
+uv run dopplerpoint review --audio output/demo/audio.wav \
+  --config output/demo/search.json --results output/demo/result.json \
+  --flights output/demo/flights.csv
+```
+
+Select a coordinate in the table or map to draw its **pink actual-flight model**.
+The model uses the result's saved source frequency and shared recording-clock offset;
+review does not independently slide it into a better fit. Configured events can be
+reviewed without a detection report. Without corresponding tracks/configuration,
+only the ideal detection fit is available. Toggle curves off to see whether they
+actually cover a continuous tone; use resolution and contrast controls to inspect
+faint features rather than treating a detector score as proof.
+
+When a search config is loaded, kept events export as a curated config. Otherwise
+export contains curated events only; add bounds and remaining search settings before
+using it for a location search. Review marks never automatically rewrite results or
+rerun scoring. Review JSON restores decisions only when duration and event keys match.
+
+Leaflet 1.9.4 is distributed under its BSD-2-Clause license in
+`dopplerpoint/web/LEAFLET-LICENSE`. Map attribution: © OpenStreetMap contributors.

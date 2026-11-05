@@ -9,7 +9,7 @@ from .physics import fit_trace
 from .search import run_search, spectrogram, geojson
 
 
-def serve(port=8765):
+def serve(port=8765, review=None):
     class Handler(BaseHTTPRequestHandler):
         def reply(self, data, status=200):
             body = json.dumps(data, allow_nan=False).encode()
@@ -20,11 +20,65 @@ def serve(port=8765):
             self.wfile.write(body)
 
         def do_GET(self):
+            from urllib.parse import urlparse,parse_qs
+            url = urlparse(self.path)
+            if url.path.startswith('/assets/'):
+                name = url.path.removeprefix('/assets/')
+                if name not in ('leaflet.js','leaflet.css','LEAFLET-LICENSE','review.js'):
+                    return self.reply({'error':'Not found'},404)
+                path = Path(__file__).with_name('web')/name
+                self.send_response(200)
+                self.send_header('Content-Type','text/css' if name.endswith('.css') else 'text/javascript' if name.endswith('.js') else 'text/plain')
+                self.end_headers()
+                self.wfile.write(path.read_bytes())
+                return
+            if review and url.path.startswith('/review/'):
+                try:
+                    if url.path == '/review/manifest': return self.reply(review.manifest())
+                    q = parse_qs(url.query)
+                    index = int(q.get('event',['0'])[0])
+                    if not 0 <= index < len(review.events): raise ValueError('Invalid event index')
+                    padding = float(q.get('padding',['30'])[0])
+                    if url.path == '/review/audio':
+                        body = review.clip(index,padding)
+                        import re
+                        length = len(body)
+                        byte_range = self.headers.get('Range')
+                        start,end = 0,length-1
+                        if byte_range:
+                            match = re.fullmatch(r'bytes=(\d*)-(\d*)',byte_range)
+                            if not match or not any(match.groups()):
+                                raise ValueError('Invalid audio byte range')
+                            a,b = match.groups()
+                            if a:
+                                start = int(a)
+                                end = min(int(b),end) if b else end
+                            else:
+                                start = max(0,length-int(b))
+                            if start >= length or start > end:
+                                self.send_response(416)
+                                self.send_header('Content-Range',f'bytes */{length}')
+                                self.end_headers()
+                                return
+                        self.send_response(206 if byte_range else 200)
+                        self.send_header('Content-Type','audio/wav')
+                        self.send_header('Accept-Ranges','bytes')
+                        if byte_range: self.send_header('Content-Range',f'bytes {start}-{end}/{length}')
+                        self.send_header('Content-Length',str(end-start+1))
+                        self.end_headers();self.wfile.write(body[start:end+1])
+                        return
+                    if url.path == '/review/window':
+                        candidate = int(q['candidate'][0]) if 'candidate' in q else None
+                        if candidate is not None and not 0 <= candidate < len(review.candidates): raise ValueError('Invalid candidate index')
+                        return self.reply(review.window(index,candidate,padding,float(q.get('fmin',['30'])[0]),float(q.get('fmax',['700'])[0]),int(q.get('nfft',['16384'])[0])))
+                    return self.reply({'error':'Not found'},404)
+                except (ValueError,IndexError,KeyError,OSError) as error:
+                    return self.reply({'error':str(error)},400)
             if self.path == '/health':
                 return self.reply({'status': 'ok'})
             if self.path != '/':
                 return self.reply({'error': 'Not found'}, 404)
-            body = Path(__file__).with_name('web').joinpath('index.html').read_bytes()
+            body = Path(__file__).with_name('web').joinpath('review.html' if review else 'index.html').read_bytes()
             self.send_response(200)
             self.send_header('Content-Type', 'text/html; charset=utf-8')
             self.end_headers()
