@@ -1,0 +1,205 @@
+# DopplerPoint
+
+An open-source, local aircraft-acoustic geolocation workbench inspired by
+[“I discovered a sound that leaks your exact location (and it's everywhere)”](https://www.youtube.com/watch?v=UytYrhYLOKI).
+This is an independent implementation of the methodology in the supplied transcript,
+not the author's original code. No transcript or third-party recordings are distributed.
+
+## Install and try
+
+Python 3.10+ and FFmpeg (`ffmpeg` and `ffprobe`) are required for media ingestion.
+On Ubuntu, install FFmpeg with `sudo apt-get install ffmpeg`.
+
+```sh
+uv sync --frozen
+uv run dopplerpoint demo --workers 4
+uv run dopplerpoint serve
+```
+
+The browser workspace listens on loopback port 8765. It supports media upload,
+automatic flight/terrain downloads, automatic or manual event measurement, a
+click-to-trace spectrogram, curve fitting, ranked candidate coordinates, a spatial
+score plot, and GeoJSON export. No external map SDK, API key, or cloud upload of
+your audio is involved. The service is intended for a trusted single-user machine.
+Browser uploads are limited to 32 MiB; use the CLI for large recordings.
+
+Without uv: `python -m pip install .`, then `dopplerpoint …`.
+For a supplied GeoTIFF DEM install `pip install '.[terrain]'`.
+
+## Media to results, including record downloads
+
+```sh
+uv run dopplerpoint analyze recording.mp4 \
+  --date 2025-12-30 --bounds 39.99 -100.01 40.01 -99.99 \
+  --workers 16 --output output/analysis
+```
+
+These bounds are an example, not a known recording location. Bounds are
+`south west north east` in degrees; dates and timestamps are UTC. If you know the
+recording start, use `--recorded-at 2025-12-30T12:34:56Z` instead of `--date`.
+Container `creation_time` metadata is used when available; verify it, since export
+and transcode timestamps frequently differ from actual capture time. An explicit
+recording timestamp takes precedence. If only a date is supplied, two separate
+flyovers are needed to constrain the shared recording clock.
+
+The pipeline:
+
+1. Uses FFmpeg to extract mono 8 kHz PCM from local video/audio.
+2. Proposes up to two descending Doppler events with a curved-template bank,
+   rejects stationary-tone matches, and optimizes each proposal's source frequency,
+   speed, slant distance and arrival CPA. Saves editable `search.json`.
+3. Resolves that date's preferred **ADSB.lol** public daily release, downloads all
+   split tar parts, checks sizes and GitHub-published SHA-256 digests when supplied,
+   and caches them. Preserves TLS verification. Streams tar members without
+   extracting archive paths. Converts full readsb traces to a geographic/time-filtered CSV.
+4. Downloads required public elevation HGT tiles automatically, with gzip CRC and
+   shape validation. Adjacent UTC-day flight archives are included when a known
+   recording window crosses midnight.
+5. Filters candidate grids and ranks matches using actual 3D aircraft trajectories,
+   sound propagation delay and locked multi-event scoring.
+6. Writes `result.json`, `result.geojson`, normalized flight CSV, configuration and
+   archive provenance. Empty results mean no candidate survived, not a location fix.
+
+Daily archives are typically several GB even for a small search area: the upstream
+archive is global. `--max-download-gb` defaults to 8 per day; increase it explicitly
+when needed. No paid service or login is required, but coverage and date availability
+vary. Archive download failures and rate limits are surfaced instead of substituting
+invented records. Existing complete downloads are reused after verification; interrupted
+parts are downloaded again. Automatic terrain has a 25-tile limit.
+
+**This is a research prototype, not a guaranteed audio-to-address system.** Automated
+measurements can choose speech, machinery, harmonics or the wrong source frequency.
+Inspect the saved proposals and the spectrogram. Use `--config search.json` to override
+events, elevation, filters and search parameters. At least a recording date and
+search bounds are required when absent from metadata/context. Unknown geography
+cannot be inferred reliably from an arbitrary input file alone. A national grid can
+be configured, but this implementation has not been benchmarked at continental scale.
+The video’s exact location result has not been reproduced: its raw recording and
+flight dataset were not provided.
+
+## Manual measurements / existing data
+
+```sh
+uv run dopplerpoint download 2025-12-30 \
+  --bounds 39.99 -100.01 40.01 -99.99 --output output/archive
+uv run dopplerpoint search --audio recording.wav --flights output/archive/flights.csv \
+  --config search.json --workers 8 --output output/result.json
+uv run dopplerpoint fit trace.json
+```
+
+`trace.json` is `[[audio_seconds, frequency_hz], ...]` with at least eight points.
+`fit` estimates an ideal straight-flight curve, not a confidence interval.
+A reproducible sample config is generated by `demo` as `output/demo/search.json`.
+Manual `search` reads WAV; `analyze` decodes other media formats.
+
+CSV columns: `flight_id,timestamp,latitude,longitude,altitude_m,engine`.
+Timestamp is Unix seconds UTC; altitude is meters; optional `engine` is `prop`,
+`jet`, or `unknown`. Only explicitly known jets are removed. Duplicate timestamps
+are deduplicated, gaps over `max_track_gap_s` (default 30) split tracks, and
+supersonic/discontinuous segments raise an error. Archive ingestion prefers geometric
+altitude, falls back to barometric altitude, skips stale/ground points, and splits
+readsb flight legs. Unknown engine types remain eligible.
+
+Config essentials:
+
+```json
+{
+  "bounds": [39.994, -100.008, 40.006, -99.992],
+  "spacing_m": 200,
+  "refine_spacing_m": 50,
+  "refine_top": 3,
+  "workers": 8,
+  "backend": "cpu",
+  "elevation_m": 0,
+  "sound_speed_mps": 343,
+  "time_shifts_s": [-2, -1, 0, 1, 2],
+  "offset_tolerance_s": 5,
+  "max_grid_points": 100000,
+  "max_scored_pairs": 100000,
+  "events": [{
+    "start_s": 23, "end_s": 90, "audio_cpa_s": 58,
+    "f0_hz": [129, 130, 131], "harmonics": [1, 2],
+    "speed_mps": [60, 90], "slant_m": [600, 1400]
+  }]
+}
+```
+
+Use two event objects for unknown recording time. For one event, add
+`utc_cpa_s` (Unix seconds) to constrain the absolute arrival time.
+Optional `trace` per event contains `[seconds, Hz]` points and selects negative
+mean-squared trace error instead of spectral brightness. Do not combine trace-error
+and brightness scoring across events: their units differ.
+Optional `silence_radius_m` rejects candidates with an intervening CPA within that
+slant radius, excluding `silence_margin_s` (default 60) around the events. It is
+disabled by default: absence of a visible tone is an uncertain audibility assumption.
+`auto_terrain: true` downloads terrain; `dem: "/path/to/elevation.tif"` uses a
+local DEM (CLI only); otherwise `elevation_m` is the constant observer elevation.
+
+## Computation and physical model
+
+WGS84 Earth-centered positions retain Earth curvature. Each consecutive track
+sample defines a constant-velocity segment. CPA is minimized analytically over
+segments in 3D. For every emitted sample:
+
+```
+arrival = emission + slant_distance / c
+radial = dot(source_velocity, source_position - observer) / slant_distance
+heard_frequency = source_frequency * c / (c + radial)
+```
+
+This transforms the whole curve, rather than shifting it by a fixed delay.
+Frequency/time interpolation samples robustly whitened STFT intensity. Source
+frequency and the first event's placement are swept; subsequent events share that
+same UTC-to-recording clock offset. Results include per-event scores, flight pair
+leaders, and the modeled clock offset. Finer grids score around top coarse candidates.
+
+Filtering order avoids expensive work: conservative track-speed envelopes first,
+then a segment-midpoint KD-tree whose query radius includes half the longest segment,
+then exact slant/CPA speed/absolute-time constraints. The most selective event's
+candidate list is enumerated first; partial flight combinations are pruned against
+the inter-event timing constraints before constructing full tuples. The optional
+silence filter follows. Full spectral scoring is last. Frequency and harmonic sweeps are
+vectorized. CPU grids use configurable **spawned processes**, so independent geometry
+and scoring work use multiple cores without the Python GIL. Coarse results are reduced
+deterministically; refinement currently runs in the parent process. Per-worker inputs
+and spectrograms are loaded per work chunk, so memory grows with worker count.
+Use `--workers 1` when profiling small inputs or constrained memory. Large systems
+can raise `max_grid_points` and `max_scored_pairs`; these are explicit workload
+budgets, not fundamental spatial limits. The global pair budget is checked as chunks
+complete, so in-flight chunks can finish before cancellation.
+
+Optional GPU interpolation: install a CuPy distribution matching your CUDA runtime
+(e.g. `pip install cupy-cuda12x`), then use `--backend cuda --workers 1`.
+The spectral interpolation batch runs on the GPU; geometry, filtering, detection
+and orchestration remain on CPU. This is not an end-to-end GPU search, and small
+batches may be slower due to transfer overhead. Multi-GPU execution is not implemented.
+CUDA hardware is optional; CPU is the default and reference implementation.
+
+Important model limits: piecewise-linear ADS-B tracks, constant source frequency,
+a stationary listener and uniform sound speed. Wind, refraction, reflection,
+propeller RPM changes, microphone clocks, track sampling and vertical datum errors
+can move or destroy matches. ECEF expects ellipsoidal heights, while public terrain
+is generally orthometric and aircraft barometric altitude is pressure-derived.
+Convert compatible datums for precision work; the automatic workflow does not yet
+apply geoid or pressure corrections. Scores rank only the supplied candidates;
+they are not probabilities or evidence of an exact location.
+
+## Validation and development
+
+```sh
+uv run python -m unittest discover -s tests -v
+uv run dopplerpoint demo --workers 2
+```
+
+Tests cover the analytic retarded-time solution, nonlinear trace fitting, checksum
+rejection, split-archive parsing, media decoding, automatic event proposals, locked
+timing rejection, synthetic location recovery and deterministic CPU worker equivalence.
+Network boundaries in integration tests use fixtures. Live checks separately validate
+the public release manifest, a bounded actual archive sample and public terrain.
+The synthetic demo's known observer is **40, -100**; it is generated test data.
+
+Code: MIT. ADSB.lol data: **ODbL-1.0**, attribution to ADSB.lol and its feeders;
+see the source release linked in `provenance.json` for database license obligations.
+Public elevation: [Tilezen elevation tiles](https://registry.opendata.aws/terrain-tiles/),
+with source-dependent attribution requirements. Exported results do not inherit the
+code license automatically. Use recordings and flight data you are entitled to analyze.
