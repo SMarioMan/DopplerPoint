@@ -23,6 +23,7 @@ def main():
     auto.add_argument('media')
     auto.add_argument('--bounds', nargs=4, type=float, required=True, metavar=('S','W','N','E'))
     auto.add_argument('--date', help='UTC recording day, YYYY-MM-DD')
+    auto.add_argument('--end-date',help='Last UTC date for an uncertain recording date range, inclusive')
     auto.add_argument('--recorded-at', help='Recording start timestamp, ISO-8601 with timezone')
     auto.add_argument('--config', help='Optional manual event/search overrides')
     auto.add_argument('--max-download-gb', type=float, default=8)
@@ -35,7 +36,25 @@ def main():
     for cmd in (search, auto, demo):
         cmd.add_argument('--workers', type=int, help='CPU process count (default: up to 8)')
         cmd.add_argument('--backend', choices=['cpu','cuda'], default='cpu')
+    detect = commands.add_parser('detect', help='Autonomously scan media and save accepted/rejected event diagnostics')
+    detect.add_argument('media')
+    detect.add_argument('--workers',type=int,default=4)
+    detect.add_argument('--output',default='output/detection')
     args = parser.parse_args()
+    if args.command == 'detect':
+        from .pipeline import prepare_media,detect_events
+        out = Path(args.output)
+        audio,_ = prepare_media(args.media,out)
+        report = out/'detection-report.json'
+        try:
+            events = detect_events(audio,max_events=1000000,report_path=report,workers=args.workers)
+        except ValueError as e:
+            if report.exists() and str(e).startswith('No reliable'):
+                print(json.dumps(dict(status='no_reliable_detection',report=str(report),reason=str(e)),indent=2))
+                return
+            raise
+        print(json.dumps(dict(status='events_detected',accepted_count=len(events),report=str(report)),indent=2))
+        return
     if args.command == 'download':
         from .archive import download_day
         print(download_day(args.date,args.bounds,args.output,args.max_download_gb))
@@ -46,7 +65,7 @@ def main():
         config['backend'] = args.backend
         if args.workers is not None: config['workers'] = args.workers
         elif args.backend == 'cuda': config['workers'] = 1
-        result = analyze(args.media,args.bounds,args.output,args.date,args.recorded_at,config,args.max_download_gb)
+        result = analyze(args.media,args.bounds,args.output,args.date,args.recorded_at,config,args.max_download_gb,args.end_date)
         print(json.dumps(dict(output=args.output,stats=result['stats'],best=result['results'][:1]),indent=2))
         return
     if args.command == 'serve':

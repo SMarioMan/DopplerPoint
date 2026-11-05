@@ -62,6 +62,62 @@ class IntegrationTests(unittest.TestCase):
             wrong=run_search(data['audio'],data['flights'],data['config'])
             self.assertEqual(wrong['results'],[])
 
+    def test_stationary_hum_and_noise_rejected_without_human_review(self):
+        from scipy.io import wavfile
+        with tempfile.TemporaryDirectory() as d:
+            rate=4000;t=np.arange(0,120,1/rate)
+            rng=np.random.default_rng(812)
+            audio=.12*np.sin(2*np.pi*130*t)+.04*np.sin(2*np.pi*260*t)+rng.normal(0,.025,len(t))
+            path=Path(d)/'hum.wav';wavfile.write(path,rate,audio.astype(np.float32))
+            report=Path(d)/'report.json'
+            with self.assertRaisesRegex(ValueError,'No reliable'):
+                detect_events(path,report_path=report)
+            self.assertEqual(json.loads(report.read_text())['accepted_count'],0)
+
+    def test_overlapping_long_scan(self):
+        from scipy.io import wavfile
+        with tempfile.TemporaryDirectory() as d:
+            data=generate(d)
+            rate,audio=wavfile.read(data['audio'])
+            path=Path(d)/'long.wav'
+            wavfile.write(path,rate,np.r_[np.zeros(500*rate,dtype=audio.dtype),audio])
+            events=detect_events(path,workers=2)
+            self.assertEqual(len(events),2)
+            self.assertLess(abs(events[0]['audio_cpa_s']-558),15)
+            self.assertLess(abs(events[1]['audio_cpa_s']-668),15)
+            self.assertTrue(all(e['validation']['accepted'] for e in events))
+
+    def test_four_flyovers_detected_and_jointly_located(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=generate(d,flyovers=[(55,75,130),(165,95,165),(275,65,110),(385,85,145)])
+            events=detect_events(data['audio'])
+            self.assertEqual(len(events),4)
+            config=data['config'];config['events']=events;config['workers']=2
+            config['time_shifts_s']=list(range(-8,9,2));config['offset_tolerance_s']=20
+            result=run_search(data['audio'],data['flights'],config)
+            best=result['results'][0]
+            self.assertEqual(len(best['flights']),4)
+            self.assertLess(abs(best['latitude']-40),.0006)
+            self.assertLess(abs(best['longitude']+100),.0006)
+
+    def test_unknown_capture_time_searches_both_requested_dates(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=generate(d)
+            second=Path(d)/'next-day.csv'
+            with open(data['flights']) as source,second.open('w',newline='') as dest:
+                reader=csv.DictReader(source);writer=csv.DictWriter(dest,fieldnames=reader.fieldnames)
+                writer.writeheader()
+                for row in reader:
+                    row['timestamp']=str(float(row['timestamp'])+86400)
+                    writer.writerow(row)
+            config=data['config'];config['auto_terrain']=False;config['workers']=1
+            with patch('dopplerpoint.pipeline.download_day',side_effect=[Path(data['flights']),second]) as download:
+                result=analyze(data['audio'],config['bounds'],Path(d)/'out',day='2023-11-14',end_day='2023-11-15',config=config)
+            self.assertEqual([c.args[0] for c in download.call_args_list],['2023-11-14','2023-11-15'])
+            self.assertLess(abs(result['results'][0]['latitude']-40),.0005)
+            clocks={round(row['clock_offset_s']/86400) for row in result['results']}
+            self.assertEqual(len(clocks),2)
+
     def test_parallel_equivalence(self):
         with tempfile.TemporaryDirectory() as d:
             data=generate(d)

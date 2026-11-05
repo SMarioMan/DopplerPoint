@@ -7,18 +7,19 @@ from scipy.io import wavfile
 from .physics import Track, ecef
 
 
-def generate(directory):
+def generate(directory, flyovers=None):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     origin = 1700000000.
     lat, lon = 40., -100.
     observer = ecef(lat, lon, 0)
     rate = 4000
-    audio_time = np.arange(0, 230, 1/rate)
+    flyovers = flyovers or [(55,75,130),(165,95,165)]
+    audio_time = np.arange(0, max(e[0] for e in flyovers)+65, 1/rate)
     rng = np.random.default_rng(7)
     audio = rng.normal(0, .015, len(audio_time))
     rows, events = [], []
-    for j, (center, speed, f0) in enumerate([(55, 75, 130), (165, 95, 165)]):
+    for j, (center, speed, f0) in enumerate(flyovers):
         ts = np.arange(center-50, center+51, 2.)
         points = []
         for t in ts:

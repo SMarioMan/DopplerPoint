@@ -8,8 +8,11 @@ from scipy.interpolate import RegularGridInterpolator
 from .physics import ecef, read_tracks
 
 
-def spectrogram(path, nfft=4096, hop=512):
-    rate, audio = wavfile.read(path)
+def spectrogram(path, nfft=4096, hop=512, start_s=0., end_s=None):
+    rate, audio = wavfile.read(path, mmap=True)
+    start = int(start_s*rate)
+    end = int(end_s*rate) if end_s is not None else len(audio)
+    audio = audio[start:end]
     if audio.dtype.kind == 'u':
         audio = audio.astype(float)-128
     else:
@@ -31,7 +34,7 @@ def spectrogram(path, nfft=4096, hop=512):
     # Per-frequency robust whitening reduces stationary hum's influence.
     med = np.median(power, axis=1, keepdims=True)
     scale = np.maximum(np.median(abs(power-med), axis=1, keepdims=True)*1.4826, 3.)
-    return f, t, np.clip((power-med)/scale, -5, 15)
+    return f, t+start/rate, np.clip((power-med)/scale, -5, 15)
 
 
 def terrain_sampler(config):
@@ -70,9 +73,20 @@ def grid(bounds, spacing, max_points=100000):
 def _serial_search(audio, flights, config):
     events = config['events']
     c = float(config.get('sound_speed_mps', 343))
-    if not 300 <= c <= 380 or not 1 <= len(events) <= 3:
-        raise ValueError("Use 1–3 events and sound speed 300–380 m/s")
-    f, t, image = spectrogram(audio)
+    if not 300 <= c <= 380 or not events:
+        raise ValueError("Provide one or more events and sound speed 300–380 m/s")
+    # Score only event windows: multi-hour recordings never need a full STFT.
+    windows = sorted((max(0,e['start_s']-3),e['end_s']+3) for e in events)
+    merged = []
+    for start,end in windows:
+        if merged and start <= merged[-1][1]: merged[-1][1] = max(merged[-1][1],end)
+        else: merged.append([start,end])
+    slices = [spectrogram(audio,start_s=a,end_s=b) for a,b in merged]
+    f = slices[0][0]
+    t = np.concatenate([part[1] for part in slices])
+    image = np.concatenate([part[2] for part in slices],axis=1)
+    unique = np.r_[True,np.diff(t)>0]
+    t,image = t[unique],image[:,unique]
     tracks = read_tracks(flights, float(config.get('max_track_gap_s', 30)))
     if not tracks:
         raise ValueError("No usable flight segments")

@@ -45,8 +45,8 @@ flyovers are needed to constrain the shared recording clock.
 The pipeline:
 
 1. Uses FFmpeg to extract mono 8 kHz PCM from local video/audio.
-2. Proposes up to two descending Doppler events with a curved-template bank,
-   rejects stationary-tone matches, and optimizes each proposal's source frequency,
+2. Proposes descending Doppler events throughout the recording with a curved-template bank,
+   validates spectral evidence, and optimizes each proposal's source frequency,
    speed, slant distance and arrival CPA. Saves editable `search.json`.
 3. Resolves that date's preferred **ADSB.lol** public daily release, downloads all
    split tar parts, checks sizes and GitHub-published SHA-256 digests when supplied,
@@ -203,3 +203,40 @@ see the source release linked in `provenance.json` for database license obligati
 Public elevation: [Tilezen elevation tiles](https://registry.opendata.aws/terrain-tiles/),
 with source-dependent attribution requirements. Exported results do not inherit the
 code license automatically. Use recordings and flight data you are entitled to analyze.
+
+## Autonomous detection and long recordings
+
+`dopplerpoint detect recording.opus --workers 8 --output output/detection`
+decodes media, scans overlapping 660-second windows with 540-second strides,
+and writes `detection-report.json`. No AI service, vision model, image inspection,
+or manual selection participates in detection. PCM input is memory mapped;
+only window samples are transformed. Independent windows use spawned CPU workers.
+Search likewise computes spectrograms only around measured events, rather than
+transforming an entire multi-hour recording.
+
+The report includes all accepted events and rejected proposals with numerical
+checks: curved spectral contrast, improvement over the strongest stationary tone,
+separation from frequency-shifted control curves, ridge persistence and measurable
+frequency drift. These are **heuristic evidence gates**, not statistically calibrated
+false-alarm probabilities. Passing them identifies a Doppler-like signal; a moving
+car, changing machinery or another sound can still pass. Flight-track agreement is
+required before treating a signal as aircraft or interpreting a location.
+
+There is no two-event default cap: detection retains all accepted, temporally
+deduplicated events, and joint search supports more than three events. `max_events`
+in analysis configuration can explicitly limit the number retained, in detection-score
+order. Two events are useful when capture time is unknown; more events supply additional
+locked timing constraints. All configured events must currently match: robust subset
+consensus that tolerates unrelated accepted sounds is not yet implemented.
+The standalone detector reports `no_reliable_detection` when no proposal passes;
+it never asks an AI or user to choose a curve to make the run succeed.
+
+Tests include autonomous rejection of stationary hum with noise, overlapping long
+recordings, and joint detection/location recovery with four synthetic flyovers.
+The evidence gates have not been calibrated across a labeled real-world dataset.
+
+If the capture day is uncertain or the stream spans UTC midnight, supply an
+inclusive date range, e.g. `analyze recording.opus --date 2026-10-28
+--end-date 2026-10-29 --bounds SOUTH WEST NORTH EAST`. The pipeline downloads and
+combines both dates even when no exact recording start is known. The equivalent
+configuration key is `end_date`.
